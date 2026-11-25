@@ -1,0 +1,88 @@
+rules_version = '2';
+
+// Quy tắc bảo mật cho website quản lý lớp học.
+// Email giáo viên chủ lớp ở hàm isOwner() phải giống OWNER_EMAIL trong js/config.js (viết thường).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null && request.auth.token.email_verified == true; }
+    function myEmail() { return request.auth.token.email.lower(); }
+    function isOwner() { return signedIn() && myEmail() == 'tranphuongtrangclc@gmail.com'; }
+    function userPath() { return /databases/$(database)/documents/users/$(myEmail()); }
+    function me() { return get(userPath()).data; }
+    function isTeacher() { return isOwner() || (signedIn() && exists(userPath()) && me().role == 'teacher'); }
+    function isAssistant() { return signedIn() && exists(userPath()) && me().role == 'assistant' && me().status == 'active'; }
+    function inMyClasses(classId) { return isAssistant() && classId in me().classIds; }
+    function canClass(classId) { return isTeacher() || inMyClasses(classId); }
+
+    // Tài khoản và lời mời trợ giảng (id = email viết thường)
+    match /users/{email} {
+      allow read: if isTeacher() || (signedIn() && myEmail() == email);
+      allow create, delete: if isTeacher();
+      // Giáo viên sửa mọi thứ; trợ giảng chỉ được tự kích hoạt lời mời lần đầu đăng nhập
+      allow update: if isTeacher()
+        || (signedIn() && myEmail() == email
+            && resource.data.status == 'invited'
+            && request.resource.data.status == 'active'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'name', 'photo']));
+    }
+
+    // Lớp học
+    match /classes/{classId} {
+      allow read: if isTeacher() || inMyClasses(classId);
+      allow write: if isTeacher();
+    }
+
+    // Học viên (không chứa liên hệ, không chứa tiền)
+    match /students/{id} {
+      allow read: if canClass(resource.data.classId);
+      allow write: if isTeacher();
+    }
+
+    // Liên hệ, số điện thoại: chỉ giáo viên
+    match /studentPrivate/{id} {
+      allow read, write: if isTeacher();
+    }
+
+    // Nhật ký, điểm, từ vựng: giáo viên và trợ giảng của đúng lớp
+    match /logs/{id} {
+      allow read: if canClass(resource.data.classId);
+      allow create: if canClass(request.resource.data.classId);
+      allow update: if canClass(resource.data.classId) && canClass(request.resource.data.classId);
+      allow delete: if canClass(resource.data.classId);
+    }
+    match /tests/{id} {
+      allow read: if canClass(resource.data.classId);
+      allow create: if canClass(request.resource.data.classId);
+      allow update: if canClass(resource.data.classId) && canClass(request.resource.data.classId);
+      allow delete: if canClass(resource.data.classId);
+    }
+    match /words/{id} {
+      allow read: if canClass(resource.data.classId);
+      allow create: if canClass(request.resource.data.classId);
+      allow update: if canClass(resource.data.classId) && canClass(request.resource.data.classId);
+      allow delete: if canClass(resource.data.classId);
+    }
+    match /vocab/{id} {
+      allow read: if canClass(resource.data.classId);
+      allow create: if canClass(request.resource.data.classId);
+      allow update: if canClass(resource.data.classId) && canClass(request.resource.data.classId);
+      allow delete: if isTeacher();
+    }
+
+    // Khoản thu: chỉ giáo viên
+    match /payments/{id} {
+      allow read, write: if isTeacher();
+    }
+
+    // Cài đặt: phần công khai (tên lớp, giao diện) ai đã được cấp quyền cũng đọc được;
+    // phần riêng (tài khoản ngân hàng, SĐT) chỉ giáo viên
+    match /settings/public {
+      allow read: if isTeacher() || isAssistant();
+      allow write: if isTeacher();
+    }
+    match /settings/private {
+      allow read, write: if isTeacher();
+    }
+  }
+}
